@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { supabaseAdmin } from "./lib/supabase.js";
+import { caretrail } from "./routes/caretrail.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 5000);
@@ -10,6 +11,13 @@ const clientOrigin =
 
 app.use(cors({ origin: clientOrigin }));
 app.use(express.json({ limit: "100kb" }));
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+app.use('/api', caretrail);
 
 app.get("/", (_req, res) => {
   res.json({ message: "Paiflow API is running!" });
