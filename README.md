@@ -57,15 +57,15 @@ Address format validation does not prove deployment configuration, balances, fun
 ## Verification
 
 - client/: npm run build; npm run lint.
-- server/: npm test (includes build and four exact-money tests).
+- server/: npm test (includes build, exact-money and payment-verification tests).
 - GET /api/health/database checks the existing connection_check row.
 - GET /api/campaigns checks new database tables.
 - Unauthenticated GET /api/donations must return 401.
 - Full auth/organizer/draft tests require the migration, public Supabase configuration, and a test account.
 
-Current verification: 12 backend unit tests, 7 frontend credential/auth-message tests, and 17 live API integration assertions passed. API checks used controlled temporary accounts, campaigns, reports, and drafts, all removed afterward. The integration script is server/test/integration.mjs and must be run explicitly against a local test server; it is not part of npm test. It never prepares or submits an on-chain transaction. The wallet-challenge checks use unsigned preparation enabled and submission disabled.
+Current verification: 14 backend unit tests, 7 frontend credential/auth-message tests, and 17 live API integration assertions passed. API checks used controlled temporary accounts, campaigns, reports, and drafts, all removed afterward. The integration script is server/test/integration.mjs and must be run explicitly against a local test server; it is not part of npm test. It never prepares or submits an on-chain transaction. The wallet-challenge checks use unsigned preparation enabled and submission disabled.
 
-Local preview: http://127.0.0.1:5174, with a Node 22.22.2 backend on port 5052. PAIFLOW_ENABLE_PREPARATION and PAIFLOW_ENABLE_SIGNING are separate flags; submission is restricted to the approved account and exactly 1 XLM. Production environment changes and deployment have not been performed. No additional database migration is needed for the payment pipeline; it uses the existing private payment_attempts JSON record.
+Local preview: http://127.0.0.1:5174, with a Node 22.22.2 backend on port 5052. PAIFLOW_ENABLE_PREPARATION and PAIFLOW_ENABLE_SIGNING are separate flags; submission is restricted to the approved account, with custom donation amounts from 0.000001 to 100000 XLM. Production environment changes and deployment have not been performed. No additional database migration is needed for the payment pipeline; it uses the existing private payment_attempts JSON record.
 
 At 1,000 confirmed donations in an aggregate query, the API fails closed rather than risking an understated total. Replace this bounded query with a database aggregate before scaling. Campaign lists currently cap at 100. Add distributed rate limiting, production audit logging, and broader integration coverage before a public launch. This is a testnet development foundation, not a completed payment service.
 

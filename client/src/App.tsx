@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   BrowserRouter,
   Link,
@@ -46,6 +46,7 @@ import "./CareTrail.css";
 function useResource<T>(path: string, token?: string) {
   const [result, setResult] = useState<{ path: string; token?: string; version: number; data: T | null; error: string } | null>(null);
   const [version, setVersion] = useState(0);
+  const reload = useCallback(() => setVersion(v => v + 1), []);
   useEffect(() => {
     const controller = new AbortController();
     api<T>(path, { signal: controller.signal }, token)
@@ -63,9 +64,7 @@ function useResource<T>(path: string, token?: string) {
     data: result?.path === path && result.token === token ? result.data : null,
     error: result?.path === path && result.token === token && result.version === version ? result.error : '',
     loading: result?.path !== path || result?.token !== token || result?.version !== version,
-    reload: () => {
-      setVersion((v) => v + 1);
-    },
+    reload,
   };
 }
 function Status({
@@ -503,10 +502,8 @@ function Donate() {
   const { session } = useAuth();
   const navigate = useNavigate();
   const resource = useResource<{ campaign: Campaign }>(`/campaigns/${id}`);
-  const paymentConfig = useResource<{ signingEnabled: boolean; manualTestAmountXlm: string }>('/payments/config');
-  const [customAmount, setAmount] = useState("1");
-  const manualTest = paymentConfig.data?.signingEnabled === true;
-  const amount = manualTest ? '1' : customAmount;
+  const paymentConfig = useResource<{ signingEnabled: boolean }>('/payments/config');
+  const [amount, setAmount] = useState("1");
   const [review, setReview] = useState(false);
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -567,13 +564,13 @@ function Donate() {
           {!review ? (
             <>
               <h2>How much would you like to give?</h2>
-              {manualTest && <Notice>The approved manual wallet test is 1 XLM: 0.9 XLM to the campaign and 0.1 XLM to the community.</Notice>}
+
               <div className="amount-options">
                 {["1", "5", "10", "20"].map((a) => (
                   <button
                     type="button"
                     key={a}
-                    disabled={manualTest && a !== '1'}
+
                     className={amount === a ? "selected" : ""}
                     onClick={() => setAmount(a)}
                   >
@@ -585,7 +582,7 @@ function Donate() {
                 Donation amount (test XLM)
                 <input
                   value={amount}
-                  readOnly={manualTest}
+
                   onChange={(e) => setAmount(e.target.value)}
                   inputMode="decimal"
                   required
@@ -932,7 +929,8 @@ function AuthPage({
         <Split />
       </div>
       <form className="panel form-panel auth-form" onSubmit={submit}>
-        <h2>{titles[mode]}</h2>
+        <h2>{message && mode === 'forgot' ? 'Check your inbox.' : message && mode === 'reset' ? 'Your care trail awaits.' : titles[mode]}</h2>
+        {message && (mode === 'forgot' || mode === 'reset') ? <><Notice>{message}</Notice><p>{mode === 'forgot' ? 'Follow the reset link to choose a new password. Check your spam folder too.' : 'Your new password is saved. You can continue to your account.'}</p><Link className="button full" to="/login">{mode === 'reset' ? 'Continue to sign in' : 'Back to sign in'} <ArrowRight size={16}/></Link></> : <>
         {localDemo && mode === 'signup' && <Notice>Your confirmed test account is ready. <Link to="/login">Sign in with the prefilled defaults</Link>. Other emails use normal registration.</Notice>}
         <p>
           {mode === "signup"
@@ -1000,6 +998,7 @@ function AuthPage({
           </>
         )}
         {mode !== "login" && <Link to="/login">Back to sign in</Link>}
+        </>}
       </form>
     </div>
   );
@@ -1010,7 +1009,12 @@ function Organizer() {
     "/organizer/campaigns",
     session?.access_token,
   );
-  const [tab, setTab] = useState("campaign");
+  const [tab, setTab] = useState("dashboard");
+  const [selectedId, setSelectedId] = useState("");
+  const selected = resource.data?.campaigns.find(c => c.id === selectedId) ?? resource.data?.campaigns[0];
+  const detail = useResource<{campaign: Campaign; updates: CampaignUpdate[]}>(selected ? `/campaigns/${selected.id}` : "");
+  const received = BigInt(selected?.raised_stroops ?? '0');
+  const reported = (detail.data?.updates ?? []).reduce((sum, item) => sum + BigInt(item.expense_stroops), 0n);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1045,11 +1049,26 @@ function Organizer() {
   return (
     <>
       <Title
-        title="Organizer workspace"
+        title={tab === "dashboard" ? "Turn contributions into a clearer record." : tab === "campaign" ? "Start a cause worth caring about." : tab === "update" ? "Share what happened after the donation." : "A clearer picture of every contribution."}
         description="Give supporters a clear record of what you report."
       />
       <Status {...resource} />
-      {resource.data && (
+      <nav className="tabs organizer-nav" aria-label="Organizer workspace">
+        {[["dashboard","Dashboard"],["campaign","Create campaign"],["update","Publish update"],["report","Contribution report"]].map(([value,label])=><button key={value} className={tab===value ? "selected" : ""} onClick={()=>{setTab(value);setError("");setMessage("");}}>{label}</button>)}
+      </nav>
+      {resource.data && <>
+        <label className="organizer-selector">Selected campaign<select value={selected?.id ?? ''} onChange={event=>setSelectedId(event.target.value)}><option value="" disabled>Choose a campaign</option>{resource.data.campaigns.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select></label>
+        <div className="organizer-metrics">
+          <section className="panel"><span>Confirmed campaign receipts</span><strong>{xlm(received.toString())} XLM</strong><small>90% campaign share verified on Stellar</small></section>
+          <section className="panel report-metric"><span>Organizer-reported spending</span><strong>{xlm(reported.toString())} XLM</strong><small>Reported by the organizer; separate from payment proof</small></section>
+          <section className="panel"><span>Latest reported outcome</span><strong className="outcome-text">{detail.data?.updates[0]?.outcome || 'No outcome reported yet'}</strong><small>{detail.data?.updates.length ?? 0} published reports</small></section>
+        </div>
+        {(tab === "dashboard" || tab === "report") && <div className="workspace-grid">
+          <section className="panel form-panel"><h2>{selected?.title ?? 'Your first campaign starts here'}</h2><p>{selected?.summary ?? 'Publish your story, invite supporters and keep them informed.'}</p>{selected && <><CampaignImage category={selected.category} className="organizer-preview-photo" /><p>{xlm(selected.raised_stroops)} XLM of {xlm(selected.goal_stroops)} XLM goal</p><Link className="button secondary" to={`/campaigns/${selected.id}`}>Preview campaign <ArrowUpRight size={16}/></Link></>}<button className="button" onClick={()=>setTab(selected ? 'update' : 'campaign')}>{selected ? 'Publish an organizer update' : 'Create a campaign'}</button></section>
+          <section className="panel form-panel"><h2>Spending reports and outcomes</h2><Notice>Confirmed payments prove the transfer. Spending and outcomes below are organizer-reported.</Notice>{detail.data?.updates.length ? detail.data.updates.map(update=><article className="organizer-report" key={update.id}><small>{date(update.created_at)} · Organizer report</small><h3>{update.title}</h3><p>{update.body}</p><strong>{xlm(update.expense_stroops)} XLM reported spending</strong><p>{update.outcome}</p></article>) : <p>No organizer reports published yet. Add an update when you have something concrete to share.</p>}</section>
+        </div>}
+      </>}
+      {resource.data && (tab === "campaign" || tab === "update") && (
         <div className="workspace-grid">
           <section className="panel form-panel">
             <h2>Your campaigns</h2>
@@ -1091,7 +1110,7 @@ function Organizer() {
                 Publish update
               </button>
             </div>
-            <form onSubmit={publish} key={tab}>
+            <form onSubmit={publish} key={`${tab}:${selected?.id ?? "new"}`}>
               {tab === "campaign" ? (
                 <>
                   <label>
@@ -1149,7 +1168,7 @@ function Organizer() {
                 <>
                   <label>
                     Campaign
-                    <select name="campaignId" required>
+                    <select name="campaignId" defaultValue={selected?.id} required>
                       <option value="">Choose your campaign</option>
                       {resource.data.campaigns.map((c) => (
                         <option value={c.id} key={c.id}>

@@ -4,9 +4,9 @@ import { StrKey, rpc } from "@stellar/stellar-sdk";
 import { supabaseAdmin as db } from "./supabase.js";
 import {
   assertOriginalEnvelope,
+  assertDepositInvocation,
   authorizeManualTest,
   originalTransaction,
-  preparedInvokeTargets,
   TESTNET,
   transfersFromEvents,
   verifyPayouts,
@@ -78,6 +78,7 @@ function settings() {
       process.env.PAIFLOW_DEPLOYMENT_ID ??
       "9c8b80fa-ae3b-4685-8b6e-d2e8115657c2",
     token: process.env.PAIFLOW_API_TOKEN,
+    receive: process.env.PAIFLOW_RECEIVE_CONTRACT ?? 'CDUEBIT5ONWFCB7CCRTBWG6YBSINAVH5IYUPMRYZJ7Z3CTFK76FDZYVK',
     campaign:
       process.env.PAIFLOW_CAMPAIGN_RECIPIENT ??
       "GC5LWDPOB7AGJ7APMFTHTGRASVQG32KTLCYLQRIYTKPNTXXAY4QQETXQ",
@@ -120,7 +121,7 @@ export function publicPaymentConfig() {
       process.env.PAIFLOW_ENABLE_SIGNING === "true" &&
       Boolean(process.env.PAIFLOW_TEST_USER_EMAIL),
     ),
-    manualTestAmountXlm: '1',
+    amountLimits: { minXlm: '0.000001', maxXlm: '100000', decimalPlaces: 7 },
     reason: !cfg.token
       ? "The backend Paiflow credential is not configured."
       : !supportedRuntime
@@ -150,7 +151,7 @@ async function requireManualTestScope(order: Order, userId: string) {
   const account = await db.auth.admin.getUserById(userId);
   if (account.error || !account.data.user?.email_confirmed_at) throw new PaymentError(403, 'Confirm the approved CareTrail test account before continuing.');
   try { authorizeManualTest(account.data.user.email, process.env.PAIFLOW_TEST_USER_EMAIL, order.amount_stroops); }
-  catch { throw new PaymentError(403, 'The approved manual test is limited to its designated account and exactly 1 XLM.'); }
+  catch { throw new PaymentError(403, 'This account is not authorized for the configured testnet deployment.'); }
 }
 function flowFor(attempt?: Attempt) {
   const cfg = settings();
@@ -203,6 +204,7 @@ function publicAttempt(attempt: Attempt | null) {
     state: p.state,
     walletAddress: attempt.wallet_address,
     txHash: attempt.tx_hash,
+    signedSubmissionSaved: Boolean(attempt.signed_xdr),
     network: "testnet",
     networkPassphrase: TESTNET,
     unsignedXdr: p.state === "prepared" ? attempt.unsigned_xdr : null,
@@ -364,14 +366,11 @@ export async function preparePayment(
         "The deployment is not an executable native-XLM testnet Receive flow.",
       );
     const { data: balances } = await flow.balances.get();
+    const receive = settings().receive;
     snapshot.expected = {
       ...snapshot.expected,
-      triggerContracts: balances.nodes
-        .filter((node) =>
-          capabilities.operations.execute.nodeIds.includes(node.nodeId),
-        )
-        .map((node) => node.contractAddress),
-      deploymentContracts: balances.nodes.map((node) => node.contractAddress),
+      triggerContracts: [receive],
+      deploymentContracts: [...new Set([receive, ...balances.nodes.map((node) => node.contractAddress)])],
     };
     if (!snapshot.expected.deploymentContracts.length)
       throw new Error("The deployment contracts could not be identified.");
@@ -380,23 +379,14 @@ export async function preparePayment(
       amount: snapshot.expected.amount,
     });
     snapshot.sdk = sdk;
+    const preserved = await db.from('payment_attempts').update({ preparation: snapshot, unsigned_xdr: sdk.data.xdr, history_request_id: sdk.metadata.historyRequestId ?? null }).eq('donation_id', id).eq('preparation->>state', 'preparing');
+    check(preserved.error);
     const tx = originalTransaction(sdk.data.xdr);
     if (tx.source !== attempt.wallet_address)
       throw new Error(
         "The original transaction source is not the verified customer.",
       );
-    const invoked = preparedInvokeTargets(
-      tx,
-      snapshot.expected.deploymentContracts,
-    );
-    if (
-      snapshot.expected.triggerContracts.length &&
-      !invoked.every((target) =>
-        snapshot.expected.triggerContracts.includes(target),
-      )
-    )
-      throw new Error("The invocation does not match the executable trigger.");
-    snapshot.expected.triggerContracts = invoked;
+    assertDepositInvocation(tx, receive, attempt.wallet_address, snapshot.expected.amount);
     if (
       sdk.data.network !== "testnet" ||
       sdk.data.networkPassphrase !== TESTNET
@@ -419,7 +409,7 @@ export async function preparePayment(
     const network = await chain.getNetwork();
     if (network.passphrase !== TESTNET)
       throw new Error("Unexpected RPC network.");
-    const simulation = await chain.simulateTransaction(tx, undefined, "record");
+    const simulation = await chain.simulateTransaction(tx);
     if (
       rpc.Api.isSimulationError(simulation) ||
       rpc.Api.isSimulationRestore(simulation)
@@ -563,7 +553,18 @@ export async function submitPayment(
 }
 export async function recoverPayment(id: string, userId: string) {
   const order = await orderFor(id, userId);
-  const attempt = await attemptFor(id);
+  let attempt = await attemptFor(id);
+  // Recover only the exact retained preparation, without preparing a replacement.
+  if (attempt && !attempt.unsigned_xdr && attempt.preparation.sdk?.data.xdr) {
+    const retained = originalTransaction(attempt.preparation.sdk.data.xdr);
+    assertDepositInvocation(retained, settings().receive, attempt.wallet_address, order.amount_stroops);
+    if (retained.source !== attempt.wallet_address) throw new PaymentError(409, 'Original source mismatch.');
+    const txHash = Buffer.from(retained.hash()).toString('hex');
+    const snapshot = {...attempt.preparation, expected: {...attempt.preparation.expected, triggerContracts:[settings().receive], deploymentContracts:[...new Set([settings().receive,...attempt.preparation.expected.deploymentContracts])]}};
+    const saved = await db.from('payment_attempts').update({unsigned_xdr:attempt.preparation.sdk.data.xdr,tx_hash:txHash,preparation:snapshot}).eq('donation_id',id).is('unsigned_xdr',null);
+    check(saved.error);
+    attempt = await attemptFor(id);
+  }
   if (
     !attempt?.tx_hash ||
     !attempt.unsigned_xdr ||
@@ -572,23 +573,15 @@ export async function recoverPayment(id: string, userId: string) {
   )
     return { payment: publicAttempt(attempt), status: order.status };
   try {
-    const flow = flowFor(attempt);
-    const receipt = await flow.transactions.get(attempt.tx_hash);
-    if (
-      receipt.data.txHash !== attempt.tx_hash ||
-      receipt.data.network !== "testnet"
-    )
-      throw new Error("Unexpected receipt.");
-    const network = await chain.getNetwork();
+    // Stellar confirmation must not wait for the Paiflow receipt index.
+    const [network, transaction] = await Promise.all([chain.getNetwork(), chain.getTransaction(attempt.tx_hash)]);
     if (network.passphrase !== TESTNET)
       throw new Error("Unexpected RPC network.");
-    const transaction = await chain.getTransaction(attempt.tx_hash);
     if (transaction.txHash !== attempt.tx_hash)
       throw new Error("Unexpected chain transaction.");
     let status: "confirmed" | "failed" | null = null;
     let evidence: unknown = null;
     if (
-      receipt.data.status === "SUCCESS" &&
       transaction.status === rpc.Api.GetTransactionStatus.SUCCESS
     ) {
       const original = originalTransaction(attempt.unsigned_xdr);
@@ -603,7 +596,6 @@ export async function recoverPayment(id: string, userId: string) {
       );
       status = "confirmed";
     } else if (
-      receipt.data.status === "FAILED" &&
       transaction.status === rpc.Api.GetTransactionStatus.FAILED
     )
       status = "failed";
@@ -613,7 +605,8 @@ export async function recoverPayment(id: string, userId: string) {
         .update({
           preparation: { ...attempt.preparation, state: status },
           receipt: {
-            sdk: receipt,
+            source: "stellar-testnet",
+            txHash: attempt.tx_hash,
             verifiedPayouts: evidence,
             checkedAt: new Date().toISOString(),
           },
@@ -648,6 +641,6 @@ export async function recoverPayment(id: string, userId: string) {
     payment: publicAttempt(attempt),
     status: order.status,
     message:
-      "Final verification is not complete. Keep the original record and check again; do not create a replacement payment.",
+      attempt.signed_xdr ? "The original payment is not yet verified. Keep this record and check again; do not pay again." : "No signed payment was saved for this record. The wallet ownership signature did not send XLM. If your wallet shows a completed payment, provide its transaction hash so it can be checked. The original preparation is retained.",
   };
 }

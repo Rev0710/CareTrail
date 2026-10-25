@@ -16,6 +16,7 @@ import {
   NATIVE_CONTRACT,
   TESTNET,
   assertOriginalEnvelope,
+  assertDepositInvocation,
   authorizeManualTest,
   originalTransaction,
   preparedInvokeTargets,
@@ -25,10 +26,11 @@ import {
 } from "../dist/lib/payment-verification.js";
 
 const payer = Keypair.random();
-test('manual submission scope is one approved account and exactly 1 XLM', () => {
+test('manual submission scope is one approved account with custom amounts', () => {
   authorizeManualTest('donor@example.com', 'DONOR@example.com', '10000000');
   assert.throws(() => authorizeManualTest('other@example.com', 'donor@example.com', '10000000'));
-  assert.throws(() => authorizeManualTest('donor@example.com', 'donor@example.com', '20000000'));
+  authorizeManualTest('donor@example.com', 'donor@example.com', '20000000');
+  assert.throws(() => authorizeManualTest('donor@example.com', 'donor@example.com', '0'));
   assert.throws(() => authorizeManualTest(undefined, 'donor@example.com', '10000000'));
 });
 const campaign = Keypair.random();
@@ -195,3 +197,7 @@ test("decodes actual contract-event XDR while ignoring unrelated event kinds", (
     transfer(payer.publicKey(), trigger, "10000000"),
   ]);
 });
+
+test('Receive routes through Split to both exact recipients',()=>{const receive='CDUEBIT5ONWFCB7CCRTBWG6YBSINAVH5IYUPMRYZJ7Z3CTFK76FDZYVK';const route={...expected,triggerContracts:[receive],deploymentContracts:[receive,trigger]};const events=[transfer(payer.publicKey(),receive,'10000000'),transfer(receive,trigger,'10000000'),transfer(trigger,campaign.publicKey(),'9000000'),transfer(trigger,community.publicKey(),'1000000')];assert.doesNotThrow(()=>verifyPayouts(events,route));assert.throws(()=>verifyPayouts(events.slice(1),route));});
+
+test('Receive deposit binds the original payer, amount and entrypoint',()=>{const receive='CDUEBIT5ONWFCB7CCRTBWG6YBSINAVH5IYUPMRYZJ7Z3CTFK76FDZYVK';const tx=new TransactionBuilder(new Account(payer.publicKey(),'1'),{fee:'100',networkPassphrase:TESTNET}).addOperation(new Contract(receive).call('deposit',new Address(payer.publicKey()).toScVal(),nativeToScVal(10000000n,{type:'i128'}))).setTimeout(180).build();assert.doesNotThrow(()=>assertDepositInvocation(tx,receive,payer.publicKey(),'10000000'));assert.throws(()=>assertDepositInvocation(tx,receive,payer.publicKey(),'20000000'));assert.throws(()=>assertDepositInvocation(tx,receive,stranger.publicKey(),'10000000'));assert.throws(()=>assertDepositInvocation(tx,trigger,payer.publicKey(),'10000000'));});

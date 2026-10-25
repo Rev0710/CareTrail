@@ -14,7 +14,7 @@ export const TESTNET = Networks.TESTNET;
 export const NATIVE_CONTRACT = Asset.native().contractId(TESTNET);
 export function authorizeManualTest(email: string | undefined, approvedEmail: string | undefined, amount: string) {
   if (!email || !approvedEmail || email.toLowerCase() !== approvedEmail.toLowerCase()) throw new Error('Only the approved manual-test account may use submission.');
-  if (amount !== '10000000') throw new Error('This manual test is limited to exactly 1 XLM.');
+  if (!/^[1-9][0-9]{0,14}$/.test(amount)) throw new Error('Invalid positive donation amount.');
 }
 export type Transfer = {
   contract: string;
@@ -81,6 +81,14 @@ export function preparedInvokeTargets(
       "The original invocation is outside the configured deployment.",
     );
   return [target];
+}
+export function assertDepositInvocation(transaction: Transaction, receiveContract: string, wallet: string, amount: string) {
+  preparedInvokeTargets(transaction, [receiveContract]);
+  const operation = transaction.operations[0];
+  if (operation.type !== 'invokeHostFunction' || operation.func.type !== 'hostFunctionTypeInvokeContract') throw new Error('Expected a Receive deposit invocation.');
+  const call = operation.func.value;
+  const args = call.args.map(arg => scValToNative(arg));
+  if (call.functionName.toString() !== 'deposit' || args.length !== 2 || args[0] !== wallet || args[1] !== BigInt(amount)) throw new Error('The Receive deposit payer or amount does not match the saved order.');
 }
 export function assertOriginalEnvelope(
   original: string,
@@ -202,6 +210,9 @@ export function verifyPayouts(events: Transfer[], expected: ExpectedPayment) {
       )
     )
       throw new Error("A recipient made an unexpected outgoing transfer.");
+  }
+  for (const contract of expected.deploymentContracts) {
+    if (sum(event => event.to === contract) !== sum(event => event.from === contract)) throw new Error('The pipeline retained funds instead of completing the expected payouts.');
   }
   return {
     payer: expected.wallet,

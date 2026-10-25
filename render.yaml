@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: caretrail-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.2
+      - key: CLIENT_ORIGIN
+        value: https://caretrailxpaiflow.vercel.app
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: PAIFLOW_API_TOKEN
+        sync: false
+      - key: PAIFLOW_ENABLE_PREPARATION
+        value: "true"
+      - key: PAIFLOW_ENABLE_SIGNING
+        value: "true"
+      - key: PAIFLOW_TEST_USER_EMAIL
+        sync: false

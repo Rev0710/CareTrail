@@ -1601,3 +1601,7 @@ footer a {
     display: none;
   }
 }
+
+.organizer-nav{margin-bottom:24px;flex-wrap:wrap}.organizer-selector{max-width:500px;margin-bottom:24px}.organizer-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;margin-bottom:28px}.organizer-metrics .panel{padding:24px;display:flex;flex-direction:column;gap:12px}.organizer-metrics span,.organizer-metrics small{color:var(--slate,#536477)}.organizer-metrics strong{font-size:30px;color:var(--navy,#182B43)}.organizer-metrics .outcome-text{font-size:20px}.report-metric{background:#EEF2FF}.organizer-report{padding:24px 0;border-bottom:1px solid #e0e6f0}.workspace-grid .button{margin-top:16px;margin-right:12px}.workspace-grid .campaign-image{max-height:260px}@media(max-width:760px){.organizer-metrics{grid-template-columns:1fr}.organizer-nav{gap:6px}.organizer-nav button{font-size:13px;padding:12px}}
+
+.campaign-photo.organizer-preview-photo{position:static;display:block;width:100%;height:240px;object-fit:cover;border-radius:14px;margin:20px 0}

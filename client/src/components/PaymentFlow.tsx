@@ -4,7 +4,7 @@ import { api, xlm } from "../lib/http";
 import { useAuth } from "../lib/auth-client";
 import type { Donation } from "../types/caretrail";
 import { Notice } from "./ui";
-import { Link } from 'react-router-dom';
+
 
 type Payment = {
   state: string;
@@ -16,10 +16,11 @@ type Payment = {
   campaignRecipient?: string;
   communityRecipient?: string;
   txHash?: string;
+  signedSubmissionSaved?: boolean;
   message?: string | null;
 };
 type Config = {
-  manualTestAmountXlm: string;
+
   preparationEnabled: boolean;
   signingEnabled: boolean;
   reason: string | null;
@@ -84,6 +85,32 @@ export function PaymentFlow({
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    if (!['pending','submitting'].includes(payment?.state ?? '')) return;
+    let active = true;
+    let checks = 0;
+    let checking = false;
+    const timer = window.setInterval(async () => {
+      if (checking) return;
+      if (++checks > 20) { window.clearInterval(timer); return; }
+      checking = true;
+      try {
+        const result = await api<{payment: Payment; status: string; message?: string}>(`/donations/${donation.id}/check`, {method:'POST',body:'{}'}, token);
+        if (!active) return;
+        setPayment(result.payment);
+        if (['confirmed','failed'].includes(result.status)) {
+          setMessage(result.status === 'confirmed' ? 'Payment confirmed on Stellar. Both 90/10 payouts match your donation.' : 'Stellar recorded a failed transaction. This donation is not counted.');
+          onChange();
+          window.clearInterval(timer);
+        }
+      } catch { /* Keep the original; the user can check again. */ }
+      finally { checking = false; }
+    }, 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [donation.id, token, payment?.state, onChange]);
+  useEffect(() => {
+    if (payment && ['confirmed','failed'].includes(payment.state) && payment.state !== donation.status) onChange();
+  }, [payment, donation.status, onChange]);
   async function connect() {
     setBusy("Connecting to Freighter…");
     setError("");
@@ -256,7 +283,7 @@ export function PaymentFlow({
       </h3>
       {config && (
         <>
-          {config.signingEnabled && <Notice>The approved manual payment test is exactly 1 XLM. Your wallet must be different from both payout recipients.</Notice>}
+          {config.signingEnabled && <Notice>Review your chosen amount, the 90/10 split and network fee before approving in Freighter. Your wallet must differ from both recipients.</Notice>}
           <dl className="facts">
             <div>
               <dt>90% campaign recipient</dt>
@@ -295,6 +322,7 @@ export function PaymentFlow({
       {payment?.txHash && (
         <p className="fine-print break-word">
           Original transaction: {payment.txHash}
+          <br/><a href={`https://stellar.expert/explorer/testnet/tx/${payment.txHash}`} target="_blank" rel="noopener noreferrer">View original hash on Stellar Testnet</a>
         </p>
       )}
       {ready && (
@@ -331,15 +359,16 @@ export function PaymentFlow({
       )}
       {error && <Notice error>{error}</Notice>}
       {walletUnavailable && <div className="wallet-setup"><h3>Continue in Chrome with Freighter</h3><ol><li>Open Chrome and install <a href="https://freighter.app/" target="_blank" rel="noopener noreferrer">Freighter from its official website</a> if needed.</li><li>Unlock your customer wallet and select Stellar Testnet.</li><li>Paste this checkout link into Chrome, sign in with your local defaults, then select Verify wallet & prepare.</li></ol><label>Checkout link<input readOnly value={`${window.location.origin}/receipt/${donation.id}`} onFocus={event => event.currentTarget.select()} /></label><button className="button secondary full" onClick={async () => { try { await navigator.clipboard.writeText(`${window.location.origin}/receipt/${donation.id}`); setLinkCopied(true); } catch { setMessage('Select and copy the checkout link shown above.'); } }}>{linkCopied ? 'Checkout link copied' : 'Copy checkout link'}</button><p className="fine-print">Use a funded customer wallet that differs from both payout recipients. Only you approve the wallet prompts. No payment has been submitted.</p></div>}
+      {payment?.state === "needs_review" && <Notice>This record is not confirmed on Stellar. A wallet ownership signature alone does not send XLM. Check the original payment below. If Freighter shows a successful payment, keep its transaction hash for reconciliation.</Notice>}
       {message && <Notice>{message}</Notice>}
-      {config?.signingEnabled && donation.amount_stroops !== '10000000' && !originalExists && <Notice>This unpaid draft is {xlm(donation.amount_stroops)} XLM. The approved test is 1 XLM (0.9 campaign + 0.1 community). <Link to={`/donate/${donation.campaign_id}`}>Start the approved 1-XLM test draft</Link>. No payment was submitted for this draft.</Notice>}
+
       <div className="payment-actions">
         {!originalExists &&
           donation.status !== "confirmed" &&
           donation.status !== "failed" && (
             <button
               className="button full"
-              disabled={!config?.preparationEnabled || Boolean(busy) || (config.signingEnabled && donation.amount_stroops !== '10000000')}
+              disabled={!config?.preparationEnabled || Boolean(busy)}
               onClick={connect}
             >
               <ShieldCheck size={17} /> Verify wallet & prepare

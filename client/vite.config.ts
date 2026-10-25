@@ -4,10 +4,15 @@ import { validateBrowserEnv } from "./config/public-env.mjs";
 
 // https://vite.dev/config/
 export default defineConfig(({ mode, command }) => {
-  validateBrowserEnv({
+  const browserEnv = {
     ...loadEnv(mode, process.cwd(), "VITE_"),
     ...process.env,
-  });
+  };
+  validateBrowserEnv(browserEnv);
+  if (command === "build") {
+    const missing = ["VITE_API_URL", "VITE_SUPABASE_URL", "VITE_SUPABASE_PUBLISHABLE_KEY"].filter(name => !browserEnv[name]);
+    if (missing.length) throw new Error(`CareTrail deployment settings missing: ${missing.join(", ")}. Set these in Vercel and redeploy.`);
+  }
   const localDemo = command === 'serve' && mode === 'development' ? loadEnv(mode, process.cwd(), 'LOCAL_DEMO_') : {};
   return {
     plugins: [react()],
